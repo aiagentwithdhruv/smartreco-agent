@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}{{ product.title }} — SmartReco{% endblock %}
+
+{% block content %}
+{# data-* attributes are the contract with tracker.js: it emits a `view` on load
+   and a `dwell` when the tab is hidden or the page is left. #}
+<article class="detail" data-product-id="{{ product.id }}" data-track-view="1">
+  <p class="crumb"><a href="/?category={{ product.category|urlencode }}">{{ product.category }}</a></p>
+  <h1>{{ product.title }}</h1>
+  <p class="detail-meta">{{ product.level }} · {{ product.price|rupees }}</p>
+  <p class="detail-desc">{{ product.description }}</p>
+
+  {% if product.tags %}
+  <ul class="tags">{% for t in product.tags %}<li>{{ t }}</li>{% endfor %}</ul>
+  {% endif %}
+
+  <form class="buy" action="/cart/add" method="post">
+    <input type="hidden" name="product_id" value="{{ product.id }}">
+    <button type="submit" class="cta big">Add to cart</button>
+  </form>
+  {% if request.query_params.get('added') %}
+    <p class="added">Added to your cart — the agent noticed.</p>
+  {% endif %}
+</article>
+
+{% include "_recommendation.html" %}
+{% endblock %}

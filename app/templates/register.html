@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign up — SmartReco{% endblock %}
+
+{% block content %}
+<section class="auth">
+  <h1>Create an account</h1>
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/register">
+    <label>Email <input type="email" name="email" required autocomplete="email"></label>
+    <label>Password <input type="password" name="password" required minlength="8" autocomplete="new-password">
+      <small>At least 8 characters.</small></label>
+    <button class="cta" type="submit">Sign up</button>
+  </form>
+  <p class="alt">Already registered? <a href="/login">Log in</a>.</p>
+</section>
+{% endblock %}

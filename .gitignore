@@ -3,6 +3,8 @@
 !.env.example
 __pycache__/
 *.pyc
+.venv/
+.pytest_cache/
 .chroma/
 *.sqlite3
 .DS_Store

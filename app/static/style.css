@@ -1,0 +1,113 @@
+/* SmartReco — one stylesheet, no framework. Clean over fancy. */
+:root {
+  --ink: #14161c;
+  --muted: #5f6572;
+  --line: #e4e7ee;
+  --bg: #f7f8fb;
+  --accent: #3b4ce0;
+  --accent-soft: #eef0ff;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ---- top bar ---- */
+.topbar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 14px 28px; background: #fff; border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { font-size: 20px; font-weight: 700; color: var(--ink); }
+.brand span { color: var(--accent); }
+.search { display: flex; flex: 1; max-width: 520px; gap: 8px; }
+.search input {
+  flex: 1; padding: 9px 12px; border: 1px solid var(--line);
+  border-radius: var(--radius); font-size: 14px;
+}
+.search button, .cta, .buy button {
+  padding: 9px 16px; border: 0; border-radius: var(--radius);
+  background: var(--accent); color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.cta:hover, .search button:hover { background: #2d3bc0; text-decoration: none; }
+.nav { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+.nav .who { color: var(--muted); font-size: 13px; }
+.linklike { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 14px; padding: 0; }
+
+/* ---- layout ---- */
+.page { max-width: 1080px; margin: 0 auto; padding: 28px; }
+.foot { text-align: center; color: var(--muted); font-size: 13px; padding: 32px 16px; }
+h1 { font-size: 26px; margin: 0 0 6px; }
+
+/* ---- catalog ---- */
+.catalog-head { margin-bottom: 18px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.chip {
+  padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: #fff; font-size: 13px; color: var(--muted);
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip:hover { text-decoration: none; border-color: var(--accent); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 16px; }
+.card {
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px; display: flex; flex-direction: column; gap: 8px;
+}
+.card h3 { margin: 0; font-size: 16px; line-height: 1.35; }
+.card h3 a { color: var(--ink); }
+.card-cat { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); }
+.card-desc { margin: 0; color: var(--muted); font-size: 13.5px; flex: 1; }
+.card-foot { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.level { color: var(--muted); text-transform: capitalize; }
+.price { font-weight: 700; }
+.empty { color: var(--muted); }
+
+/* ---- recommendation block ---- */
+.reco {
+  background: var(--accent-soft); border: 1px solid #d7dbff;
+  border-radius: var(--radius); padding: 20px; margin-bottom: 28px;
+}
+.reco-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; }
+.reco-head h2 { margin: 0; font-size: 19px; }
+.reco-meta { font-size: 12px; color: var(--muted); }
+.reco-narrative { margin: 0 0 16px; font-size: 15px; }
+
+/* ---- product detail ---- */
+.detail {
+  background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 26px; margin-bottom: 28px;
+}
+.crumb { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 8px; }
+.detail-meta { color: var(--muted); margin: 0 0 16px; text-transform: capitalize; }
+.detail-desc { margin: 0 0 18px; }
+.tags { list-style: none; display: flex; flex-wrap: wrap; gap: 8px; padding: 0; margin: 0 0 20px; }
+.tags li { background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; font-size: 12px; color: var(--muted); }
+.buy button.big { padding: 12px 22px; font-size: 15px; }
+.added { color: #16794a; font-size: 14px; margin-top: 12px; }
+
+/* ---- auth + admin forms ---- */
+.auth { max-width: 380px; margin: 40px auto; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); padding: 26px; }
+.auth form, .adminform { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+label { display: flex; flex-direction: column; gap: 5px; font-size: 13px; color: var(--muted); }
+input, select, textarea {
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px;
+  font: inherit; font-size: 14px; color: var(--ink); background: #fff;
+}
+.error { background: #fdeaea; color: #a01b1b; padding: 9px 12px; border-radius: 8px; font-size: 14px; margin: 0; }
+.alt { font-size: 13px; color: var(--muted); margin-top: 16px; }
+
+/* ---- admin table ---- */
+.table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.table th, .table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 14px; }
+.table th { background: #fafbfe; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.badge { font-size: 11px; padding: 2px 8px; border-radius: 999px; }
+.badge.ok { background: #e5f6ed; color: #16794a; }
+.badge.bad { background: #fdeaea; color: #a01b1b; }

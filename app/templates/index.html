@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}SmartReco — AI &amp; data courses{% endblock %}
+
+{% block content %}
+{% include "_recommendation.html" %}
+
+<section class="catalog">
+  <header class="catalog-head">
+    <h1>
+      {% if q %}Results for &ldquo;{{ q }}&rdquo;
+      {% elif active_category %}{{ active_category }}
+      {% else %}Course catalog{% endif %}
+    </h1>
+    <div class="chips">
+      <a class="chip {% if not active_category %}on{% endif %}" href="/{% if q %}?q={{ q }}{% endif %}">All</a>
+      {% for c in categories %}
+        <a class="chip {% if active_category == c %}on{% endif %}"
+           href="/?category={{ c|urlencode }}{% if q %}&amp;q={{ q|urlencode }}{% endif %}">{{ c }}</a>
+      {% endfor %}
+    </div>
+  </header>
+
+  {% if products %}
+  <div class="grid">
+    {% for product in products %}
+      {% include "_product_card.html" %}
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty">No courses match that. Try a different search.</p>
+  {% endif %}
+</section>
+{% endblock %}

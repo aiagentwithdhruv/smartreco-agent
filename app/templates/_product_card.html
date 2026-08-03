@@ -1,0 +1,10 @@
+{# One catalog tile. data-product-id is what tracker.js reads for click signals. #}
+<article class="card" data-product-id="{{ product.id }}">
+  <div class="card-cat">{{ product.category }}</div>
+  <h3><a href="/products/{{ product.id }}">{{ product.title }}</a></h3>
+  <p class="card-desc">{{ product.description|truncate(120) }}</p>
+  <div class="card-foot">
+    <span class="level">{{ product.level }}</span>
+    <span class="price">{{ product.price|rupees }}</span>
+  </div>
+</article>

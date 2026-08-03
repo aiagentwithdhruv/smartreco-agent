@@ -1,0 +1,17 @@
+{# Agent output. `recommendation` is None until the trigger engine has fired once. #}
+{% if recommendation %}
+<section class="reco">
+  <header class="reco-head">
+    <h2>Picked for you</h2>
+    <span class="reco-meta">v{{ recommendation.version }} · {{ recommendation.trigger_reason }}</span>
+  </header>
+  <p class="reco-narrative">{{ recommendation.narrative }}</p>
+  {% if recommendation.products %}
+  <div class="grid">
+    {% for product in recommendation.products %}
+      {% include "_product_card.html" %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endif %}

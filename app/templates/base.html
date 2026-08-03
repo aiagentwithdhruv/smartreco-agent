@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SmartReco{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">Smart<span>Reco</span></a>
+
+  <form class="search" action="/" method="get" role="search">
+    <input type="search" name="q" placeholder="Search courses — try &quot;langgraph agents&quot;"
+           value="{{ q or '' }}" aria-label="Search courses">
+    <button type="submit">Search</button>
+  </form>
+
+  <nav class="nav">
+    {% if user %}
+      {% if user.is_admin %}<a href="/admin/products">Admin</a>{% endif %}
+      <span class="who" data-user-id="{{ user.id }}">{{ user.email }}</span>
+      <form action="/logout" method="post"><button class="linklike" type="submit">Log out</button></form>
+    {% else %}
+      <a href="/login">Log in</a>
+      <a class="cta" href="/register">Sign up</a>
+    {% endif %}
+  </nav>
+</header>
+
+<main class="page">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="foot">
+  SmartReco — behavioral recommendation agent · every LLM call routed through Mesh API
+</footer>
+</body>
+</html>
