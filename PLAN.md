@@ -17,10 +17,15 @@ Build an online-course marketplace where a backend **agent watches each user's t
 - No faked features: hardcoded recs, never-queried vector DB, never-called LLM client = score kill.
 
 ## 2. DHRUV'S CLICKS (only he can do these)
-- [ ] Register on career.krishnaik.in dashboard → copy **SUBMISSION_TOKEN**
-- [ ] Create Mesh API account → key `rsk_…` (check free credits/limits)
-- [ ] Add both as GitHub Actions secrets on the repo (Settings → Secrets → Actions)
-- [ ] Final submission on the dashboard before **11 Aug 12:00 IST**
+- [x] Register on dashboard → SUBMISSION_TOKEN (✅ 4 Aug, set as repo secret by Angelina)
+- [ ] Create Mesh API account → key `rsk_…` → paste to Angelina (sets secret + smoke test)
+- [ ] **LinkedIn post link — REQUIRED by the submission form** (participation post; doubles as a daily-post rep)
+- [ ] **X post link — REQUIRED by the submission form**
+- [ ] **Demo video (YouTube) — REQUIRED by the form** (rules page said optional; the form marks it *) — record near the end, 2-3 min screen walkthrough
+- [ ] Final submission before **11 Aug 12:00 IST** — ⚠️ repo URL LOCKS on submit, cannot be changed
+
+## 2.5 DEPLOYMENT (his call 4 Aug: use the aiwithdhruv subdomain)
+Live URL optional but strong for finalists: deploy dockerized app (needs a real server — Chroma persistence + APScheduler rule out pure serverless) and attach **smartreco.aiwithdhruv.com** via CNAME from the aiwithdhruv.com DNS. Host candidate: any free-tier container host (Render/Railway/Fly) — decide at S8, not before the core is green.
 
 ## 3. ARCHITECTURE (locked)
 ```
