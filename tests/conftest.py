@@ -14,15 +14,19 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TMP}/test.sqlite3"
 os.environ["CHROMA_DIR"] = f"{_TMP}/chroma"
 os.environ["SESSION_SECRET"] = "test-secret"
 os.environ["MESH_API_KEY"] = ""  # never let a test reach the network
+os.environ["EMBEDDINGS"] = "hashing"  # no model downloads, no network, deterministic
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
 from app.db import Base, SessionLocal, engine, get_db  # noqa: E402
+from app.deps import get_store  # noqa: E402
 from app.main import app  # noqa: E402
 from app.models import Product, User  # noqa: E402
 from app.security import hash_password  # noqa: E402
+from app.services.embeddings import HashingEmbeddingProvider  # noqa: E402
+from app.services.vector_store import VectorStore  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -43,14 +47,28 @@ def db() -> Session:
         session.close()
 
 
+@pytest.fixture(scope="session")
+def _chroma() -> VectorStore:
+    """One Chroma client for the whole session — it holds a file lock."""
+    return VectorStore(provider=HashingEmbeddingProvider(), path=f"{_TMP}/chroma")
+
+
 @pytest.fixture
-def client(db: Session) -> TestClient:
-    """TestClient sharing the test's session, so assertions see request writes.
+def store(_chroma: VectorStore) -> VectorStore:
+    """An empty vector index, using local hashing embeddings (never the network)."""
+    _chroma.reset()
+    return _chroma
+
+
+@pytest.fixture
+def client(db: Session, store: VectorStore) -> TestClient:
+    """TestClient sharing the test's session and vector store.
 
     Instantiated without a `with` block on purpose: that skips the lifespan and
     keeps init_db() from creating a database outside the temp directory.
     """
     app.dependency_overrides[get_db] = lambda: db
+    app.dependency_overrides[get_store] = lambda: store
     yield TestClient(app)
     app.dependency_overrides.clear()
 

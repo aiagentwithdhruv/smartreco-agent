@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Catalog admin — SmartReco{% endblock %}
+
+{% block content %}
+<section class="catalog-head">
+  <h1>Catalog</h1>
+  <p class="detail-meta">
+    {{ products|length }} rows in SQLite · {{ indexed }} vectors in Chroma
+    · embeddings: {{ provider }}
+    {% if unsynced %}<span class="badge bad">{{ unsynced }} unsynced</span>{% endif %}
+    {% if mismatch %}<span class="badge bad">index built by “{{ indexed_provider }}” — rebuild required</span>{% endif %}
+  </p>
+  {% if flash %}<p class="added">{{ flash }}</p>{% endif %}
+  <p style="display:flex; gap:10px; align-items:center; margin-top:12px">
+    <a class="cta" href="/admin/products/new">New course</a>
+    <form action="/admin/sync/repair" method="post">
+      <button class="linklike" type="submit" title="Reindex unsynced rows and drop orphan vectors">
+        Repair vector sync
+      </button>
+    </form>
+  </p>
+</section>
+
+<table class="table">
+  <thead>
+    <tr><th>#</th><th>Title</th><th>Category</th><th>Level</th><th>Price</th><th>Vector</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for product in products %}
+    <tr>
+      <td>{{ product.id }}</td>
+      <td><a href="/products/{{ product.id }}">{{ product.title }}</a></td>
+      <td>{{ product.category }}</td>
+      <td>{{ product.level }}</td>
+      <td>{{ product.price|rupees }}</td>
+      <td>
+        {% if product.vector_synced %}<span class="badge ok">synced</span>
+        {% else %}<span class="badge bad">unsynced</span>{% endif %}
+      </td>
+      <td style="display:flex; gap:10px">
+        <a href="/admin/products/{{ product.id }}/edit">Edit</a>
+        <form action="/admin/products/{{ product.id }}/delete" method="post"
+              onsubmit="return confirm('Delete “{{ product.title }}”?')">
+          <button class="linklike" type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

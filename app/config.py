@@ -1,7 +1,9 @@
 """Application settings, loaded from environment / .env."""
 
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,8 +15,17 @@ class Settings(BaseSettings):
     # Mesh API — the only LLM gateway used anywhere in this project.
     mesh_api_key: str = ""
     mesh_base_url: str = "https://api.meshapi.ai/v1"
-    mesh_chat_model: str = "openai/gpt-4o-mini"
-    mesh_embedding_model: str = "openai/text-embedding-3-small"
+    # minimax/m2-her is one of the three models Mesh serves free of charge, so the
+    # app has a working LLM on a zero-balance account. MESH_MODEL is an alias.
+    mesh_chat_model: str = Field(
+        default="minimax/m2-her",
+        validation_alias=AliasChoices("MESH_MODEL", "MESH_CHAT_MODEL"),
+    )
+    # Mesh has no free embedding model (checked 4 Aug 2026: 997 models, 3 free,
+    # none of them embeddings), so this only works on a topped-up account.
+    mesh_embedding_model: str = "google/embeddinggemma-300m"
+    # auto = Mesh if a key is set, falling back to local on failure.
+    embeddings: Literal["auto", "mesh", "local", "hashing"] = "auto"
 
     # App
     session_secret: str = "dev-secret-change-me"

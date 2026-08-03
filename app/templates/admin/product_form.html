@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit" if product else "New" }} course — SmartReco{% endblock %}
+
+{% block content %}
+<section class="auth" style="max-width:560px">
+  <h1>{{ "Edit course" if product else "New course" }}</h1>
+  <p class="detail-meta">Saving re-embeds this course into the vector index.</p>
+
+  <form class="adminform" method="post"
+        action="{{ '/admin/products/' ~ product.id if product else '/admin/products' }}">
+    <label>Title <input name="title" required value="{{ product.title if product else '' }}"></label>
+    <label>Category <input name="category" required value="{{ product.category if product else '' }}"></label>
+    <label>Price (₹) <input name="price" type="number" min="0" step="1"
+                            value="{{ product.price|int if product else 0 }}"></label>
+    <label>Level
+      <select name="level">
+        {% for lvl in levels %}
+          <option value="{{ lvl }}" {% if product and product.level == lvl %}selected{% endif %}>{{ lvl }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Tags (comma separated)
+      <input name="tags" value="{{ product.tags|join(', ') if product else '' }}"></label>
+    <label>Description
+      <textarea name="description" rows="5">{{ product.description if product else '' }}</textarea></label>
+    <button class="cta" type="submit">{{ "Save changes" if product else "Create course" }}</button>
+  </form>
+  <p class="alt"><a href="/admin/products">Back to catalog</a></p>
+</section>
+{% endblock %}

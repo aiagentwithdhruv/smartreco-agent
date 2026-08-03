@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.db import init_db
-from app.routers import auth, pages
+from app.routers import admin, auth, pages
 from app.templating import STATIC_DIR
 
 
@@ -30,6 +30,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 app.include_router(auth.router)
 app.include_router(pages.router)
+app.include_router(admin.router)
 
 
 @app.get("/healthz", tags=["ops"])

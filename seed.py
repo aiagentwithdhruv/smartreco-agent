@@ -18,7 +18,10 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal, init_db
 from app.models import Event, LLMCall, Product, Recommendation, User, utcnow
 from app.security import hash_password
+from app.services.catalog import reindex_all
+from app.services.embeddings import get_embedding_provider
 from app.services.tracking import record_event
+from app.services.vector_store import get_vector_store
 
 DEMO_PASSWORD = "smartreco123"
 
@@ -248,9 +251,12 @@ def main() -> None:
 
         users = upsert_accounts(db)
         products = load_catalog(db)
+        # The vector index is derived from the catalog, so rebuild it in the same run.
+        indexed = reindex_all(db, store=get_vector_store())
         events = 0 if args.no_events else play_journeys(db, users, products)
 
     print(f"Seeded {len(products)} products, {len(users)} accounts, {events} events.")
+    print(f"Indexed {indexed} products into Chroma via {get_embedding_provider().name} embeddings.")
     print(f"Log in as any of: {', '.join(e for e, _ in ACCOUNTS)}  (password: {DEMO_PASSWORD})")
 
 

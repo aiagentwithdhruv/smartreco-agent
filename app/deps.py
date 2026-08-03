@@ -8,8 +8,17 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models import User
 from app.security import SESSION_COOKIE, read_session
+from app.services.vector_store import VectorStore, get_vector_store
 
 DbSession = Annotated[Session, Depends(get_db)]
+
+
+def get_store() -> VectorStore:
+    """The vector index, as a dependency so tests can inject their own."""
+    return get_vector_store()
+
+
+Store = Annotated[VectorStore, Depends(get_store)]
 
 
 def get_current_user(
