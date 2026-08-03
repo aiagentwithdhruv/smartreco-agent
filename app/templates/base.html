@@ -35,5 +35,11 @@
 <footer class="foot">
   SmartReco — behavioral recommendation agent · every LLM call routed through Mesh API
 </footer>
+
+{% if user %}
+  {# Anonymous visitors are never tracked: without a user id tracker.js installs nothing. #}
+  <script>window.SMARTRECO = { userId: {{ user.id }} };</script>
+  <script src="/static/tracker.js" defer></script>
+{% endif %}
 </body>
 </html>
