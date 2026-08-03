@@ -3,7 +3,10 @@
 <section class="reco">
   <header class="reco-head">
     <h2>Picked for you</h2>
-    <span class="reco-meta">v{{ recommendation.version }} · {{ recommendation.trigger_reason }}</span>
+    <span class="reco-meta"
+          title="Recomputed because: {{ recommendation.trigger_reason }} · written by {{ recommendation.source }}">
+      v{{ recommendation.version }} · {{ recommendation.trigger_reason }} · {{ recommendation.source }}
+    </span>
   </header>
   <p class="reco-narrative">{{ recommendation.narrative }}</p>
   {% if recommendation.products %}

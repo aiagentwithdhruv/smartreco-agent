@@ -100,6 +100,9 @@ class Recommendation(Base):
     # Signature of the behavior that produced this rec — identical signature ⇒ no LLM call.
     behavior_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False, default="")
     trigger_reason: Mapped[str] = mapped_column(String(64), default="")
+    # Which model wrote the narrative, or "rule-based" when no LLM was available.
+    # Recorded so a recommendation never has to be taken on trust.
+    source: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 

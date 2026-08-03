@@ -8,12 +8,13 @@ batched by static/tracker.js.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import or_, select
 
-from app.deps import CurrentUser, DbSession, require_user_page
+from app.deps import CurrentUser, DbSession, Store, require_user_page
 from app.models import Product, User
+from app.services.recommendations import RecommendationView, current_for
 from app.services.tracking import record_event
 from app.templating import templates
 
@@ -24,11 +25,22 @@ def _categories(db: DbSession) -> list[str]:
     return sorted(db.scalars(select(Product.category).distinct()).all())
 
 
+def _recommendation(
+    db: DbSession, user: User | None, store: Store, background: BackgroundTasks
+) -> RecommendationView | None:
+    """Signed-in visitors get the agent's current pick; anonymous ones get nothing."""
+    if user is None:
+        return None
+    return current_for(db, user.id, store=store, schedule=background.add_task)
+
+
 @router.get("/")
 def home(
     request: Request,
     db: DbSession,
     user: CurrentUser,
+    store: Store,
+    background: BackgroundTasks,
     q: Annotated[str | None, Query(max_length=120)] = None,
     category: Annotated[str | None, Query(max_length=64)] = None,
 ):
@@ -55,13 +67,20 @@ def home(
             "categories": _categories(db),
             "q": q,
             "active_category": category,
-            "recommendation": None,  # filled in by the agent (S4)
+            "recommendation": _recommendation(db, user, store, background),
         },
     )
 
 
 @router.get("/products/{product_id}")
-def product_detail(request: Request, db: DbSession, user: CurrentUser, product_id: int):
+def product_detail(
+    request: Request,
+    db: DbSession,
+    user: CurrentUser,
+    store: Store,
+    background: BackgroundTasks,
+    product_id: int,
+):
     product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Product not found")
@@ -72,7 +91,7 @@ def product_detail(request: Request, db: DbSession, user: CurrentUser, product_i
             "user": user,
             "product": product,
             "categories": _categories(db),
-            "recommendation": None,  # filled in by the agent (S4)
+            "recommendation": _recommendation(db, user, store, background),
         },
     )
 
