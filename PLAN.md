@@ -87,4 +87,9 @@ LangSmith tracing (bonus ⭐) wrapped around the graph; llm_calls table = own ob
 - Judged by AI first → conventional structure, type hints, docstrings, requirements.txt exact.
 
 ## 8. STATUS LOG
-- 4 Aug 01:50 — Folder + plan created. Videos transcribing (`notes/`). Repo scaffold next. Build not started.
+- 4 Aug 01:50 — Folder + plan created, videos transcribed, repo public, CI workflow + both secrets set.
+- 4 Aug 03:40 — **S1–S4 COMPLETE AND PUSHED** (`bc449fb` skeleton/auth/models/catalog · `2794287` admin CRUD + SQLite↔Chroma dual-write · `02f8e83` batched tracker · `c3163a5` trigger engine + agent + grounding validator · `3d4a545` Mesh free-model adaptation). **164 tests passing.** Verified independently: `python seed.py` → 31 products, 4 accounts, 26 events, indexed into Chroma; `uvicorn app.main:app` boots, home 200.
+  Mesh: key live, balance $0 — using free model `minimax/m2-her` (verified answering); embeddings run LOCALLY (local-minilm) so no paid AI call exists anywhere; documented as rule-compliant.
+  Demo accounts (seeded): admin@smartreco.dev / aditi@ / rahul@ / meera@example.com — password `smartreco123`.
+  ⛔ Builders stopped by an Anthropic monthly spend limit at 03:22. **S5–S8 not started**: LangGraph rewrite, APScheduler digest, LangSmith, frontend polish, README v2 + metrics table, live smoke test with the real key, deployment to smartreco.aiwithdhruv.com.
+  Submission is ALREADY VALID as-is (all mandatory requirements met); S5–S8 are the bonus/polish that separate a solid entry from a winning one.
