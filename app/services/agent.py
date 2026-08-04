@@ -42,8 +42,11 @@ MIN_CANDIDATES = 3  # below this, the category filter is dropped and retrieval w
 SYSTEM_PROMPT = (
     "You are the course advisor for SmartReco, an online course marketplace. "
     "You write short, specific, persuasive notes to a learner about what to study next. "
-    "You may ONLY recommend courses from the CANDIDATES list you are given, referring to them by id. "
-    "Never invent a course, a price or a claim about content. "
+    "You may ONLY recommend courses from the CANDIDATES list you are given. "
+    "In the narrative, name each course by its exact title — never write an id, "
+    "the ids belong in the product_ids field only. "
+    "Never invent a course, a price, a statistic or a claim about content — if a "
+    "number was not given to you, do not write one. "
     "Two or three sentences, warm and concrete, referencing what the learner actually did. "
     "No bullet points, no hype, no exclamation marks."
 )
@@ -93,10 +96,35 @@ def retrieve(
 
 
 def _candidate_block(products: list[Product]) -> str:
+    """Candidates as the model sees them.
+
+    Prices are deliberately left out. A persuasive pitch does not need them, and
+    handing a model a column of numbers is handing it something to misquote —
+    seen live: a ₹4,999 course pitched as "(₹2,999)", copied off a neighbouring
+    row. The page renders the real price next to the card anyway.
+    """
     return "\n".join(
-        f"- id={p.id} | {p.title} | {p.category} | {p.level} | ₹{p.price:,.0f} | {p.description[:140]}"
+        f"- id={p.id} | {p.title} | {p.category} | {p.level} | {p.description[:140]}"
         for p in products
     )
+
+
+# ₹2,999 · Rs. 2999 · INR 2,999 — any figure the model might present as a price.
+_MONEY_RE = re.compile(r"(?:₹|Rs\.?|INR)\s?([\d,]+)", re.IGNORECASE)
+
+
+def unsupported_prices(narrative: str, products: list[Product]) -> list[str]:
+    """Currency figures in the narrative that no recommended product charges.
+
+    Grounding is not only about ids. A correct product with an invented price is
+    still a false claim, and it is the kind users notice at checkout.
+    """
+    allowed = {int(p.price) for p in products}
+    return [
+        figure
+        for figure in _MONEY_RE.findall(narrative or "")
+        if int(figure.replace(",", "") or 0) not in allowed
+    ]
 
 
 def _build_messages(profile: BehaviorProfile, products: list[Product]) -> list[dict[str, str]]:
@@ -104,7 +132,8 @@ def _build_messages(profile: BehaviorProfile, products: list[Product]) -> list[d
         f"LEARNER BEHAVIOR:\n{profile.summary()}\n\n"
         f"CANDIDATES (the only courses you may recommend):\n{_candidate_block(products)}\n\n"
         "Pick the 2-3 best fits and reply with JSON only, no code fence:\n"
-        '{"narrative": "<2-3 sentences>", "product_ids": [<ids from CANDIDATES>]}'
+        '{"narrative": "<2-3 sentences, courses named by title, no ids>", '
+        '"product_ids": [<ids from CANDIDATES>]}'
     )
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -208,6 +237,13 @@ def run_agent(
             narrative, proposed_ids = parse_generation(result.text)
             llm_used = True
             source = result.model
+            if not narrative or not proposed_ids:
+                # A paid-for reply we could not use. Without this line the
+                # fallback is invisible and looks like the model was never called.
+                log.warning(
+                    "unparseable generation from %s for user %s (narrative=%s, ids=%s): %.300s",
+                    result.model, user_id, bool(narrative), proposed_ids, result.text,
+                )
         except Exception:  # noqa: BLE001 — a model outage degrades, it does not 500
             log.exception("Mesh generation failed for user %s — falling back to rule-based", user_id)
         finally:
@@ -222,6 +258,13 @@ def run_agent(
         # pitch. Fall back to the top of retrieval.
         kept = retrieved_ids[:3]
         narrative = ""
+
+    bad_prices = unsupported_prices(narrative, [by_id[pid] for pid in kept if pid in by_id])
+    if bad_prices:
+        log.warning("dropping narrative for user %s — quoted prices %s match no recommended course",
+                    user_id, bad_prices)
+        narrative = ""
+
     if not narrative or not llm_used:
         narrative = _rule_based_narrative(profile, [by_id[pid] for pid in kept if pid in by_id])
         source = RULE_BASED

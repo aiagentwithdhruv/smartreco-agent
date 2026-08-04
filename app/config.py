@@ -17,15 +17,20 @@ class Settings(BaseSettings):
     mesh_base_url: str = "https://api.meshapi.ai/v1"
     # minimax/m2-her is one of the three models Mesh serves free of charge, so the
     # app has a working LLM on a zero-balance account. MESH_MODEL is an alias.
+    # The field name is listed alongside the env aliases on purpose: a
+    # validation_alias otherwise *replaces* the field name, and
+    # Settings(mesh_chat_model=...) would be silently ignored.
     mesh_chat_model: str = Field(
         default="minimax/m2-her",
-        validation_alias=AliasChoices("MESH_MODEL", "MESH_CHAT_MODEL"),
+        validation_alias=AliasChoices("MESH_MODEL", "MESH_CHAT_MODEL", "mesh_chat_model"),
     )
     # Mesh has no free embedding model (checked 4 Aug 2026: 997 models, 3 free,
     # none of them embeddings), so this only works on a topped-up account.
     mesh_embedding_model: str = "google/embeddinggemma-300m"
-    # auto = Mesh if a key is set, falling back to local on failure.
-    embeddings: Literal["auto", "mesh", "local", "hashing"] = "auto"
+    # Embeddings run locally by default — see app/services/embeddings.py for why
+    # that is both the rule-compliant and the working choice. `mesh` and `auto`
+    # are there for a funded key.
+    embeddings: Literal["auto", "mesh", "local", "hashing"] = "local"
 
     # App
     session_secret: str = "dev-secret-change-me"

@@ -32,6 +32,37 @@ class MeshResult:
     latency_ms: int = 0
 
 
+def extract_text(response) -> str:
+    """Pull the assistant's text out of a completion, whatever shape it arrives in.
+
+    Mesh is OpenAI-compatible but the models behind it are not uniformly so, and
+    both quirks below were seen live on 4 Aug 2026:
+
+    * `minimax/m2-her` returns an extra `name` field on the message. Harmless —
+      the SDK tolerates unknown fields — but it means the response is not the
+      canonical shape and should not be treated as guaranteed.
+    * `tencent/hy3` returns an empty `content` and puts the answer in
+      `reasoning_content`.
+
+    So: prefer `content`, fall back to `reasoning_content`, and return "" rather
+    than raising if a model returns neither. An empty string makes the agent fall
+    back to its rule-based narrative, which is the correct degradation.
+    """
+    choices = getattr(response, "choices", None) or []
+    if not choices:
+        return ""
+    message = getattr(choices[0], "message", None)
+    if message is None:
+        return ""
+    # `reasoning_content` is not part of the SDK's message model, but the SDK
+    # allows extra fields and sets them as real attributes, so getattr finds it.
+    for field in ("content", "reasoning_content"):
+        value = getattr(message, field, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 class MeshClient:
     """Thin wrapper: chat completions and embeddings, both timed."""
 
@@ -55,7 +86,7 @@ class MeshClient:
         latency_ms = int((time.perf_counter() - started) * 1000)
         usage = getattr(response, "usage", None)
         return MeshResult(
-            text=(response.choices[0].message.content or "").strip(),
+            text=extract_text(response),
             model=model,
             tokens_in=getattr(usage, "prompt_tokens", 0) or 0,
             tokens_out=getattr(usage, "completion_tokens", 0) or 0,

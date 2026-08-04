@@ -1,0 +1,25 @@
+{
+  "id": "8d1573f4a5d35edac72ce31b7a9f553d",
+  "object": "chat.completion",
+  "created": 1785791414,
+  "model": "minimax/m2-her",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"narrative\": \"The quick brown fox jumps over the lazy dog.\", \"product_ids\": [1, 2]}",
+        "name": "MiniMax AI"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 226,
+    "completion_tokens": 26,
+    "total_tokens": 252,
+    "prompt_tokens_details": null,
+    "completion_tokens_details": null
+  },
+  "system_fingerprint": ""
+}

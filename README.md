@@ -43,7 +43,7 @@ aditi@example.com — 11 events over 33 simulated minutes
 26 events → 5 model calls (3 served from the behavior cache). 5.2 events per call.
 ```
 
-Tests: `pytest` — 137 tests, no network calls, Mesh always faked.
+Tests: `pytest` — 154 tests, no network calls, Mesh always faked.
 
 Copy `.env.example` to `.env` and add `MESH_API_KEY` for live generation. Without
 a key the app still runs end to end; it just labels the narrative `rule-based`
@@ -118,20 +118,33 @@ page shows row count vs vector count and has the repair button.
 | `recommendations` | versioned output: narrative, product ids, behavior hash, trigger reason, source |
 | `llm_calls` | one row per model call *and* per avoided call — our own observability trail |
 
-## Embeddings — an honest note
+## Models and embeddings — an honest note
 
-Mesh serves 997 models, three of them free, and **none of the free ones are
-embedding models** (checked 4 Aug 2026). On a zero-balance key, `/embeddings`
-returns HTTP 402, so the index would be empty and retrieval would be a lie.
+**Generation goes through Mesh, always.** The default model is
+`minimax/m2-her`, one of the three Mesh serves free, so the app works on a
+zero-balance key. The model id is never hardcoded — it comes from `MESH_MODEL`
+(or `MESH_CHAT_MODEL`), and swapping it is an env change.
 
-`EMBEDDINGS=auto` therefore prefers Mesh and falls back — loudly, at WARNING
-level — to **all-MiniLM-L6-v2 running locally** through the ONNX runtime that
-ships with Chroma. That is a real semantic embedder, it runs offline, and no
-second API is involved, so "every LLM call goes through Mesh" still holds. The
-active embedder is printed by `seed.py`, shown on the admin page, and stamped
-into the Chroma collection so a model change is detected as drift rather than
-silently corrupting retrieval. Set `EMBEDDINGS=mesh` on a funded key to use Mesh
-for embeddings too. Generation always goes through Mesh.
+Mesh is OpenAI-compatible but the models behind it are not uniformly so, and
+`app/services/mesh.py:extract_text` handles two quirks seen live on 4 Aug 2026:
+`minimax/m2-her` adds a non-standard `name` field to the assistant message, and
+`tencent/hy3` returns an empty `content` with the answer in `reasoning_content`.
+`tests/fixtures/mesh_chat_response.json` is a real captured wire response —
+`scripts/smoke_mesh.py --capture` refreshes it — and the tests parse *that*,
+so the parsing is pinned to what Mesh returns rather than to what the spec says.
+`GET /models` is a third quirk: it returns a bare JSON array the `openai` SDK
+cannot wrap, so the smoke script reads it with httpx.
+
+**Embeddings run locally**, by decision. Mesh serves 997 models, three free, and
+none of the free ones is an embedding model, so `/embeddings` returns HTTP 402 on
+a zero-balance key. `EMBEDDINGS=local` (the default) uses **all-MiniLM-L6-v2**
+through the ONNX runtime that ships with Chroma: a real semantic embedder that
+runs offline. Nothing leaves the machine, so the only external AI calls this
+project makes are chat completions to Mesh — the rule holds exactly. The active
+embedder is printed by `seed.py`, shown on the admin page, and stamped into the
+Chroma collection, so changing it is detected as drift rather than silently
+corrupting retrieval. On a funded key, `EMBEDDINGS=mesh` moves embeddings to Mesh
+too, and `EMBEDDINGS=auto` prefers Mesh with a loud fallback.
 
 ## What is not built yet
 
@@ -142,13 +155,14 @@ recommendation pipeline is a plain function chain today, not a LangGraph graph.
 ## Testing
 
 ```
-pytest                    # 137 tests
+pytest                    # 154 tests
 ```
 
 Every judged behavior has a test, and the critical ones have been mutation-checked:
 disabling grounding, removing the cooldown, checking cooldown before the cache,
 dropping `llm_calls` logging, making the behavior signature constant, unbounding
-the behavior window, and four tracker/ingest mutations — 14 mutations run, 14
+the behavior window, and four tracker/ingest mutations — 16 mutations run, 16
 caught. `tracker.js` is executed in Node against a DOM/time/network stub
 (`tests/js/tracker_harness.js`), so batching, dwell and the beacon path are
-asserted rather than eyeballed.
+asserted rather than eyeballed. The Mesh parsing is tested against a captured
+live response rather than a hand-written one.

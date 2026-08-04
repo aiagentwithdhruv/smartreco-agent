@@ -66,14 +66,16 @@ class BehaviorProfile:
         if self.carted_titles:
             parts.append("Added to cart: " + ", ".join(self.carted_titles) + ".")
         if self.category_weights:
+            # Ranked, never numbered. Handing the model a raw weight invites it to
+            # dress the number up as a statistic — seen live: a weight of 14.2 came
+            # back as "14.2% of your browsing time", which is not a fact we have.
             ranked = sorted(self.category_weights.items(), key=lambda kv: -kv[1])
-            parts.append(
-                "Strongest interest: "
-                + ", ".join(f"{name} ({weight:.1f})" for name, weight in ranked[:3])
-                + "."
-            )
-        if self.total_dwell_seconds:
-            parts.append(f"Spent about {round(self.total_dwell_seconds)}s reading course pages.")
+            names = [name for name, _ in ranked[:3]]
+            parts.append("Interests, strongest first: " + ", ".join(names) + ".")
+        if self.total_dwell_seconds >= 60:
+            parts.append("Has spent several minutes reading course pages.")
+        elif self.total_dwell_seconds:
+            parts.append("Has skimmed a few course pages.")
         if self.level_hint:
             parts.append(f"Browsing mostly {self.level_hint} material.")
         if not parts:

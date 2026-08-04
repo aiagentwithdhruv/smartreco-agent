@@ -45,6 +45,23 @@ def test_the_profile_captures_what_the_user_did(db, user, products):
     assert "langgraph agents" in profile.summary()
 
 
+def test_the_summary_hands_the_model_no_bare_numbers(db, user, products):
+    """Interest weights are internal. Shown to a model they come back dressed as
+    statistics — a live run turned a weight of 14.2 into "14.2% of your browsing
+    time", which is a fact we never had."""
+    import re
+
+    add(db, user, "search", query="langgraph agents")
+    add(db, user, "view", products[0])
+    add(db, user, "dwell", products[0], value=142.0)
+
+    summary = summarize(db, user.id).summary()
+
+    assert "Interests, strongest first" in summary
+    assert not re.search(r"\d+\.\d+", summary), f"no raw weights in: {summary}"
+    assert "142" not in summary
+
+
 def test_cart_outweighs_a_view(db, user, products):
     langgraph, sql, _ = products
     add(db, user, "view", sql)

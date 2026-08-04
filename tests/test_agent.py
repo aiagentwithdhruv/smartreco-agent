@@ -9,7 +9,14 @@ import pytest
 from sqlalchemy import select
 
 from app.models import LLMCall, Recommendation
-from app.services.agent import RULE_BASED, ground, maybe_recommend, parse_generation, run_agent
+from app.services.agent import (
+    RULE_BASED,
+    ground,
+    maybe_recommend,
+    parse_generation,
+    run_agent,
+    unsupported_prices,
+)
 from app.services.behavior import summarize
 from app.services.catalog import ProductInput, create_product
 from app.services.mesh import MeshResult
@@ -140,6 +147,56 @@ def test_when_every_id_is_hallucinated_the_agent_falls_back_to_retrieval(db, use
     assert outcome.recommendation.product_ids, "a user is never shown an empty recommendation"
     assert set(outcome.recommendation.product_ids) <= set(outcome.retrieved_ids)
     assert outcome.recommendation.source == RULE_BASED, "an ungrounded reply is not credited to the model"
+
+
+# ------------------------------------------------------------ price grounding --
+
+
+def test_unsupported_prices_spots_an_invented_figure(db, store, catalog):
+    langgraph = catalog[0]  # ₹4,999
+    assert unsupported_prices(f"Grab it for ₹{langgraph.price:,.0f}.", [langgraph]) == []
+    assert unsupported_prices("Grab it for ₹2,999.", [langgraph]) == ["2,999"]
+    assert unsupported_prices("A great next step.", [langgraph]) == []
+
+
+@pytest.mark.parametrize("text", ["Rs 2999", "Rs. 2,999", "INR 2999", "₹2999"])
+def test_unsupported_prices_catches_the_usual_notations(db, store, catalog, text):
+    assert unsupported_prices(text, [catalog[0]])
+
+
+def test_a_narrative_quoting_the_wrong_price_is_dropped(db, user, store, catalog):
+    """Seen live: a ₹4,999 course pitched as "(₹2,999)". A correct product with an
+    invented price is still a false claim."""
+    profile = agent_behavior(db, user, catalog)
+    mesh = FakeMesh(reply("Agentic Workflows with LangGraph (₹2,999) is your next step.", [catalog[0].id]))
+
+    outcome = run_agent(db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS)
+
+    assert "2,999" not in outcome.recommendation.narrative
+    assert outcome.recommendation.source == RULE_BASED
+    assert outcome.recommendation.product_ids == [catalog[0].id], "the products stay, only the claim goes"
+
+
+def test_a_narrative_quoting_the_right_price_survives(db, user, store, catalog):
+    profile = agent_behavior(db, user, catalog)
+    price = f"₹{catalog[0].price:,.0f}"
+    mesh = FakeMesh(reply(f"Agentic Workflows with LangGraph at {price} is your next step.", [catalog[0].id]))
+
+    outcome = run_agent(db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS)
+
+    assert price in outcome.recommendation.narrative
+    assert outcome.recommendation.source == "fake/chat"
+
+
+def test_prices_are_not_put_in_front_of_the_model(db, user, store, catalog):
+    profile = agent_behavior(db, user, catalog)
+    mesh = FakeMesh(reply("Picks.", [catalog[0].id]))
+
+    run_agent(db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS)
+
+    prompt = mesh.calls[0][1]["content"]
+    assert "₹" not in prompt, "nothing to misquote"
+    assert "4,999" not in prompt and "4999" not in prompt
 
 
 # ----------------------------------------------------------------- retrieval --

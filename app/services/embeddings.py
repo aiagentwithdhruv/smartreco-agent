@@ -2,19 +2,21 @@
 
 * MeshEmbeddingProvider — the preferred path. Calls Mesh `/embeddings` and logs
   the call to `llm_calls`.
-* LocalMiniLMEmbeddingProvider — all-MiniLM-L6-v2 running locally through the
-  ONNX runtime that ships with Chroma. Real semantic embeddings, no external API,
-  so the "every AI call goes through Mesh" rule still holds: nothing leaves the
-  machine. This is the fallback because Mesh serves no free embedding model
-  (verified 4 Aug 2026 — 997 models, 3 free, none of them embeddings), so a
-  zero-balance key gets HTTP 402 on /embeddings.
+* LocalMiniLMEmbeddingProvider — **the default**. all-MiniLM-L6-v2 running
+  locally through the ONNX runtime that ships with Chroma. Real semantic
+  embeddings, no external API, so the "every AI call goes through Mesh" rule
+  still holds: the only calls that leave the machine are chat completions, and
+  they all go to Mesh. This is the default because Mesh serves no free embedding
+  model (verified 4 Aug 2026 — 997 models, 3 free, none of them embeddings), so
+  a zero-balance key gets HTTP 402 on /embeddings.
 * HashingEmbeddingProvider — deterministic feature hashing over word tokens.
   *Lexical, not semantic*, labelled as such everywhere. Used by the test suite
   and by anyone who wants zero downloads. Never writes an `llm_calls` row.
 
-`EMBEDDINGS=auto` (the default) prefers Mesh and falls back to local on the first
-failure, loudly. The active provider name is printed by seed.py and shown on the
-admin page, so what produced the index is never a guess.
+`EMBEDDINGS=local` is the default. `EMBEDDINGS=auto` prefers Mesh and falls back
+to local on the first failure, loudly — use it on a funded key. The active
+provider name is printed by seed.py and shown on the admin page, so what produced
+the index is never a guess.
 """
 
 from __future__ import annotations
