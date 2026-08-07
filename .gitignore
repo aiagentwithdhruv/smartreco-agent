@@ -9,3 +9,4 @@ __pycache__/
 *.sqlite3
 .DS_Store
 notes/
+PLAN.md

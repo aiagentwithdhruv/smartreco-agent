@@ -10,6 +10,7 @@ from sqlalchemy import select
 
 from app.models import LLMCall, Recommendation
 from app.services.agent import (
+    MIN_CANDIDATES,
     RULE_BASED,
     ground,
     maybe_recommend,
@@ -20,6 +21,7 @@ from app.services.agent import (
 from app.services.behavior import summarize
 from app.services.catalog import ProductInput, create_product
 from app.services.mesh import MeshResult
+from app.services.vector_store import VectorHit
 from tests.test_behavior import add
 from tests.test_trigger import SETTINGS, store_recommendation
 
@@ -69,6 +71,24 @@ def agent_behavior(db, user, catalog):
     add(db, user, "dwell", catalog[0], value=95.0, minutes_ago=4)
     add(db, user, "view", catalog[1], minutes_ago=3)
     return summarize(db, user.id)
+
+
+def fixed_retrieval(
+    monkeypatch, catalog, *, score: float, widened: bool = False, count: int | None = None,
+):
+    """Make the grading boundary deterministic without involving embedding quality."""
+    selected = catalog[:count] if count is not None else catalog[:MIN_CANDIDATES]
+    distance = (1.0 / score) - 1.0
+    hits = [
+        VectorHit(
+            product_id=product.id,
+            distance=distance,
+            metadata={"title": product.title, "category": product.category},
+        )
+        for product in selected
+    ]
+    monkeypatch.setattr("app.services.agent.retrieve", lambda *args, **kwargs: (hits, widened))
+    return hits
 
 
 # ------------------------------------------------------------------ parsing --
@@ -242,6 +262,75 @@ def test_retrieval_widens_when_the_filtered_set_is_too_small(db, user, store):
     assert len(outcome.retrieved_ids) > 1
 
 
+def test_confident_retrieval_skips_judge_and_still_generates(
+    db, user, store, catalog, monkeypatch,
+):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.65)
+    mesh = FakeMesh(reply("A grounded next step.", [catalog[0].id]))
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS,
+    )
+
+    grade_rows = db.scalars(
+        select(LLMCall).where(LLMCall.purpose == "grade_retrieval")
+    ).all()
+    assert grade_rows == []
+    assert outcome.grade_mode == "skipped_confident"
+    assert outcome.recommendation is not None
+    assert outcome.recommendation.source == "fake/chat"
+    assert len(mesh.calls) == 1, "generation is the only model call"
+
+
+def test_weak_top_hit_calls_the_retrieval_judge(db, user, store, catalog, monkeypatch):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.64)
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store,
+        mesh=FakeMesh(reply("Picks.", [catalog[0].id])), settings=SETTINGS,
+    )
+
+    grades = db.scalars(select(LLMCall).where(LLMCall.purpose == "grade_retrieval")).all()
+    assert len(grades) == 1
+    assert grades[0].model == "fake/chat"
+    assert grades[0].user_id == user.id
+    assert outcome.grade_mode == "graded"
+
+
+def test_widened_retrieval_always_grades_even_with_a_high_score(
+    db, user, store, catalog, monkeypatch,
+):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.9, widened=True)
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store,
+        mesh=FakeMesh(reply("Picks.", [catalog[0].id])), settings=SETTINGS,
+    )
+
+    grades = db.scalars(select(LLMCall).where(LLMCall.purpose == "grade_retrieval")).all()
+    assert len(grades) == 1
+    assert outcome.grade_mode == "graded"
+
+
+def test_too_few_candidates_always_grade_even_with_a_high_score(
+    db, user, store, catalog, monkeypatch,
+):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.9, count=MIN_CANDIDATES - 1)
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store,
+        mesh=FakeMesh(reply("Picks.", [catalog[0].id])), settings=SETTINGS,
+    )
+
+    grades = db.scalars(select(LLMCall).where(LLMCall.purpose == "grade_retrieval")).all()
+    assert len(grades) == 1
+    assert outcome.grade_mode == "graded"
+
+
 def test_no_recommendation_is_stored_when_nothing_can_be_retrieved(db, user, store, products):
     """An empty index must produce silence, not an invented pitch."""
     add(db, user, "view", products[0])
@@ -264,7 +353,8 @@ def test_the_model_is_only_shown_retrieved_candidates(db, user, store, catalog):
 
     outcome = run_agent(db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS)
 
-    prompt = mesh.calls[0][1]["content"]
+    # Generation remains the final call whether or not retrieval needed grading.
+    prompt = mesh.calls[-1][1]["content"]
     for product_id in outcome.retrieved_ids:
         assert f"id={product_id}" in prompt
     assert "CANDIDATES" in prompt
@@ -302,6 +392,9 @@ def test_every_model_call_is_logged(db, user, store, catalog):
     assert call.cache_hit is False
     assert call.user_id == user.id
 
+    grades = db.scalars(select(LLMCall).where(LLMCall.purpose == "grade_retrieval")).all()
+    assert grades == [], "a skipped judge must not leave a fictional call row"
+
 
 def test_without_a_mesh_client_the_narrative_is_labelled_rule_based(db, user, store, catalog):
     profile = agent_behavior(db, user, catalog)
@@ -338,7 +431,7 @@ def test_maybe_recommend_respects_the_trigger(db, user, store, catalog):
     agent_behavior(db, user, catalog)
     fired = maybe_recommend(db, user.id, store=store, mesh=mesh, settings=SETTINGS)
     assert fired.ran is True and fired.reason == "first_recommendation"
-    assert len(mesh.calls) == 1
+    assert len(mesh.calls) == 1, "confident retrieval leaves only the generation call"
 
 
 def test_a_cache_hit_calls_no_model_but_leaves_a_row(db, user, store, catalog):
@@ -350,7 +443,7 @@ def test_a_cache_hit_calls_no_model_but_leaves_a_row(db, user, store, catalog):
         outcome = maybe_recommend(db, user.id, store=store, mesh=mesh, settings=SETTINGS)
         assert outcome.reason == "cache_hit"
 
-    assert len(mesh.calls) == 1, "five repeat visits, one model call"
+    assert len(mesh.calls) == 1, "five repeat visits, one agent run: generation only"
     calls = db.scalars(select(LLMCall)).all()
     assert sum(1 for c in calls if c.cache_hit) == 5
     assert sum(1 for c in calls if not c.cache_hit) == 1
@@ -386,4 +479,65 @@ def test_a_search_after_the_cooldown_produces_a_second_version(db, user, store, 
     assert outcome.ran is True
     assert outcome.reason == "search_intent"
     assert outcome.recommendation.version == 2
-    assert len(mesh.calls) == 2
+    assert len(mesh.calls) == 2, "two confident agent runs, each with generation only"
+
+
+# ------------------------------------------------------------- graph structure --
+
+
+def test_graph_visits_the_expected_nodes_in_order(db, user, store, catalog):
+    profile = agent_behavior(db, user, catalog)
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store,
+        mesh=FakeMesh(reply("Picks.", [catalog[0].id])), settings=SETTINGS,
+    )
+
+    assert outcome.visited_nodes == [
+        "summarize_behavior",
+        "build_interest_profile",
+        "retrieve",
+        "grade_retrieval",
+        "generate",
+        "validate_grounding",
+    ]
+
+
+def test_weak_retrieval_rewrites_and_retries_exactly_once(db, user, store, catalog, monkeypatch):
+    profile = agent_behavior(db, user, catalog)
+
+    class AlwaysWeakMesh(FakeMesh):
+        def chat(self, messages, *, temperature=0.4, model=None):
+            self.calls.append(messages)
+            if "retrieval judge" in messages[0]["content"]:
+                return MeshResult(
+                    text=json.dumps({
+                        "score": 0.2,
+                        "reason": "too broad",
+                        "rewritten_query": "langgraph orchestration stateful agents",
+                    }),
+                    model="fake/judge",
+                )
+            return MeshResult(text=reply("Picks.", [catalog[0].id]), model="fake/chat")
+
+    queries: list[str] = []
+    original_query = store.query
+
+    def counting_query(text, **kwargs):
+        queries.append(text)
+        return [
+            VectorHit(hit.product_id, 1.0, hit.metadata)
+            for hit in original_query(text, **kwargs)
+        ]
+
+    monkeypatch.setattr(store, "query", counting_query)
+    mesh = AlwaysWeakMesh()
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS,
+    )
+
+    assert queries == [profile.retrieval_query(), "langgraph orchestration stateful agents"]
+    assert outcome.visited_nodes.count("retrieve") == 2
+    assert outcome.visited_nodes.count("grade_retrieval") == 2
+    assert len(mesh.calls) == 3, "two grades, then generation; there is no second retry"

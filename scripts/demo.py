@@ -46,6 +46,18 @@ class FakeMesh:
 
     def chat(self, messages, *, temperature=0.4, model=None) -> MeshResult:
         self.calls += 1
+        if "retrieval judge" in messages[0]["content"]:
+            return MeshResult(
+                text=json.dumps({
+                    "score": 0.9,
+                    "reason": "the candidates match the behavior profile",
+                    "rewritten_query": "",
+                }),
+                model="demo/fake-mesh",
+                tokens_in=len(messages[-1]["content"]) // 4,
+                tokens_out=18,
+                latency_ms=0,
+            )
         prompt = messages[-1]["content"]
         ids = [int(m) for m in re.findall(r"id=(\d+)", prompt)][:2]
         titles = re.findall(r"id=\d+ \| ([^|]+) \|", prompt)[:2]
@@ -83,6 +95,7 @@ def main() -> int:
     store = get_vector_store()
     with SessionLocal() as db:
         reset(db)
+        skipped_retrieval_grades = 0
         users = upsert_accounts(db)
         products = load_catalog(db)
         indexed = reindex_all(db, store=store)
@@ -109,6 +122,8 @@ def main() -> int:
                 db.commit()
 
                 outcome = maybe_recommend(db, user.id, store=store, mesh=mesh, now=clock)
+                if outcome.grade_mode == "skipped_confident":
+                    skipped_retrieval_grades += 1
                 stamp = clock.strftime("%H:%M")
                 if outcome.ran:
                     dropped = f", dropped {outcome.dropped_ids}" if outcome.dropped_ids else ""
@@ -141,10 +156,21 @@ def main() -> int:
                 print(f"    · {title}")
 
         stats = efficiency_stats(db)
+        retrieval_grades = len(db.scalars(
+            select(LLMCall).where(
+                LLMCall.purpose == "grade_retrieval",
+                LLMCall.cache_hit.is_(False),
+            )
+        ).all())
         print(f"\n{BAR}")
         print(f"{stats['events']} events → {stats['llm_calls']} model calls "
               f"({stats['cache_hits']} served from the behavior cache). "
               f"{stats['events_per_llm_call']} events per call.")
+        grade_times = "time" if retrieval_grades == 1 else "times"
+        skip_times = "time" if skipped_retrieval_grades == 1 else "times"
+        print(f"Retrieval graded {retrieval_grades} {grade_times}, skipped "
+              f"{skipped_retrieval_grades} {skip_times} — decisive vector scores avoided "
+              f"{skipped_retrieval_grades} judge calls.")
         print(BAR)
     return 0
 

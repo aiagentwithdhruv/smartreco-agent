@@ -23,7 +23,9 @@ import logging
 import re
 from datetime import datetime
 from dataclasses import dataclass, field
+from typing import Any, Literal, TypedDict
 
+from langgraph.graph import END, START, StateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,6 +40,10 @@ log = logging.getLogger(__name__)
 
 RULE_BASED = "rule-based"
 MIN_CANDIDATES = 3  # below this, the category filter is dropped and retrieval widened
+RETRIEVAL_GRADE_THRESHOLD = 0.6
+# Measured on this catalogue: clear matches score 0.68-0.76, vague queries
+# score about 0.60, and off-catalogue nonsense scores 0.52-0.53.
+RETRIEVAL_CONFIDENT_SCORE = 0.65
 
 SYSTEM_PROMPT = (
     "You are the course advisor for SmartReco, an online course marketplace. "
@@ -63,6 +69,8 @@ class AgentOutcome:
     dropped_ids: list[int] = field(default_factory=list)
     llm_used: bool = False
     widened: bool = False
+    visited_nodes: list[str] = field(default_factory=list)
+    grade_mode: Literal["skipped_confident", "graded"] | None = None
 
 
 # ---------------------------------------------------------------- retrieval --
@@ -74,6 +82,7 @@ def retrieve(
     *,
     top_k: int,
     db: Session | None = None,
+    query: str | None = None,
 ) -> tuple[list[VectorHit], bool]:
     """Fetch candidates for this profile. Returns (hits, widened).
 
@@ -81,7 +90,7 @@ def retrieve(
     leaves too little to choose from, the filter is dropped rather than handing
     the generator two options and calling it a recommendation.
     """
-    query = profile.retrieval_query()
+    query = query or profile.retrieval_query()
     filters = {"category": {"$in": profile.top_categories}} if profile.top_categories else None
 
     hits = store.query(query, top_k=top_k, filters=filters, exclude_ids=profile.carted_ids, db=db)
@@ -198,75 +207,247 @@ def _rule_based_narrative(profile: BehaviorProfile, products: list[Product]) -> 
 # ------------------------------------------------------------------- driver --
 
 
-def run_agent(
-    db: Session,
-    user_id: int,
-    profile: BehaviorProfile,
-    reason: str,
-    *,
-    store: VectorStore | None = None,
-    mesh: MeshClient | None = None,
-    settings: Settings | None = None,
-    now: datetime | None = None,
-) -> AgentOutcome:
-    """Retrieve, generate, ground, store. Assumes the trigger already said yes."""
-    settings = settings or get_settings()
-    store = store or get_vector_store()
-    mesh = mesh if mesh is not None else get_mesh_client()
+class AgentState(TypedDict, total=False):
+    """Internal LangGraph state; the public API remains :class:`AgentOutcome`."""
 
-    hits, widened = retrieve(store, profile, top_k=settings.retrieval_top_k, db=db)
-    retrieved_ids = [hit.product_id for hit in hits]
-    if not retrieved_ids:
-        return AgentOutcome(False, "no_candidates", None, [], [], False, widened)
+    db: Session
+    user_id: int
+    profile: BehaviorProfile
+    reason: str
+    store: VectorStore
+    mesh: MeshClient | None
+    settings: Settings
+    now: datetime | None
+    profile_summary: str
+    retrieval_query: str
+    hits: list[VectorHit]
+    retrieved_ids: list[int]
+    widened: bool
+    retry_count: int
+    retry_requested: bool
+    grade_score: float | None
+    grade_mode: Literal["skipped_confident", "graded"]
+    candidates: list[Product]
+    narrative: str
+    proposed_ids: list[int]
+    source: str
+    llm_used: bool
+    outcome: AgentOutcome
+    visited_nodes: list[str]
 
-    by_id = {
-        product.id: product
-        for product in db.scalars(select(Product).where(Product.id.in_(retrieved_ids))).all()
+
+def _visited(state: AgentState, node: str) -> list[str]:
+    return [*state.get("visited_nodes", []), node]
+
+
+def _summarize_behavior_node(state: AgentState) -> AgentState:
+    # The trigger has already called the existing deterministic summarize()
+    # function. Carry its exact profile forward instead of recomputing behavior.
+    return {"profile": state["profile"], "visited_nodes": _visited(state, "summarize_behavior")}
+
+
+def _build_interest_profile_node(state: AgentState) -> AgentState:
+    profile = state["profile"]
+    return {
+        "profile_summary": profile.summary(),
+        "retrieval_query": profile.retrieval_query(),
+        "visited_nodes": _visited(state, "build_interest_profile"),
     }
-    candidates = [by_id[pid] for pid in retrieved_ids if pid in by_id]
-    if not candidates:
-        # Every retrieved id has since been deleted from SQLite — a desync the
-        # admin repair tool exists for. Do not fabricate a recommendation.
-        return AgentOutcome(False, "no_candidates", None, retrieved_ids, [], False, widened)
 
-    narrative, proposed_ids, source, llm_used = "", [], RULE_BASED, False
-    if mesh is not None:
+
+def _retrieve_node(state: AgentState) -> AgentState:
+    hits, widened = retrieve(
+        state["store"],
+        state["profile"],
+        top_k=state["settings"].retrieval_top_k,
+        db=state["db"],
+        query=state["retrieval_query"],
+    )
+    return {
+        "hits": hits,
+        "retrieved_ids": [hit.product_id for hit in hits],
+        "widened": state.get("widened", False) or widened,
+        "visited_nodes": _visited(state, "retrieve"),
+    }
+
+
+RETRIEVAL_GRADE_PROMPT = (
+    "You are a retrieval judge. Score how well the candidate courses match the "
+    "learner interest profile from 0.0 to 1.0. If the score is below 0.6, rewrite "
+    "the search query to improve retrieval. Reply with JSON only: "
+    '{"score": 0.0, "reason": "brief reason", "rewritten_query": "better query"}'
+)
+
+
+def _grade_messages(state: AgentState) -> list[dict[str, str]]:
+    candidates = "\n".join(
+        f"- {hit.metadata.get('title', '')} | {hit.metadata.get('category', '')} | similarity={hit.score}"
+        for hit in state.get("hits", [])
+    )
+    return [
+        {"role": "system", "content": RETRIEVAL_GRADE_PROMPT},
+        {
+            "role": "user",
+            "content": (
+                f"INTEREST PROFILE:\n{state['profile_summary']}\n\n"
+                f"QUERY:\n{state['retrieval_query']}\n\n"
+                f"CANDIDATES:\n{candidates or '(none)'}"
+            ),
+        },
+    ]
+
+
+def _parse_grade(text: str) -> tuple[float | None, str]:
+    match = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if not match:
+        return None, ""
+    try:
+        data = json.loads(match.group(0))
+        score = float(data["score"])
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None, ""
+    rewritten = str(data.get("rewritten_query") or "").strip()
+    return max(0.0, min(score, 1.0)), rewritten
+
+
+def _fallback_rewrite(profile: BehaviorProfile) -> str:
+    pieces = [profile.retrieval_query(), *profile.top_categories]
+    if profile.level_hint:
+        pieces.append(f"{profile.level_hint} course")
+    return " ".join(piece for piece in pieces if piece).strip()
+
+
+def _grade_retrieval_node(state: AgentState) -> AgentState:
+    hits = state.get("hits", [])
+    confident = (
+        bool(hits)
+        and len(hits) >= MIN_CANDIDATES
+        and not state.get("widened", False)
+        and hits[0].score >= RETRIEVAL_CONFIDENT_SCORE
+    )
+    if confident:
+        return {
+            "grade_score": hits[0].score,
+            "grade_mode": "skipped_confident",
+            "retry_requested": False,
+            "visited_nodes": _visited(state, "grade_retrieval"),
+        }
+
+    score: float | None = None
+    rewritten_query = ""
+    mesh = state.get("mesh")
+
+    if mesh is not None and state.get("hits"):
         result = None
         try:
-            result = mesh.chat(_build_messages(profile, candidates))
+            result = mesh.chat(_grade_messages(state), temperature=0.0)
+            score, rewritten_query = _parse_grade(result.text)
+        except Exception:  # noqa: BLE001 — grading failure must not block a recommendation
+            log.exception("retrieval grading failed for user %s — proceeding", state["user_id"])
+        finally:
+            if result is not None:
+                log_llm_call(
+                    state["db"],
+                    purpose="grade_retrieval",
+                    result=result,
+                    user_id=state["user_id"],
+                )
+                state["db"].commit()
+
+    weak = score is not None and score < RETRIEVAL_GRADE_THRESHOLD
+    retry_count = state.get("retry_count", 0)
+    retry_requested = weak and retry_count < 1
+    update: AgentState = {
+        "grade_score": score,
+        "grade_mode": "graded",
+        "retry_requested": retry_requested,
+        "visited_nodes": _visited(state, "grade_retrieval"),
+    }
+    if retry_requested:
+        update["retry_count"] = retry_count + 1
+        update["retrieval_query"] = rewritten_query or _fallback_rewrite(state["profile"])
+    return update
+
+
+def _after_grade(state: AgentState) -> Literal["retry", "proceed"]:
+    return "retry" if state.get("retry_requested", False) else "proceed"
+
+
+def _generate_node(state: AgentState) -> AgentState:
+    retrieved_ids = state.get("retrieved_ids", [])
+    by_id = {
+        product.id: product
+        for product in state["db"].scalars(select(Product).where(Product.id.in_(retrieved_ids))).all()
+    } if retrieved_ids else {}
+    candidates = [by_id[product_id] for product_id in retrieved_ids if product_id in by_id]
+
+    narrative, proposed_ids, source, llm_used = "", [], RULE_BASED, False
+    mesh = state.get("mesh")
+    if mesh is not None and candidates:
+        result = None
+        try:
+            result = mesh.chat(_build_messages(state["profile"], candidates))
             narrative, proposed_ids = parse_generation(result.text)
             llm_used = True
             source = result.model
             if not narrative or not proposed_ids:
-                # A paid-for reply we could not use. Without this line the
-                # fallback is invisible and looks like the model was never called.
                 log.warning(
                     "unparseable generation from %s for user %s (narrative=%s, ids=%s): %.300s",
-                    result.model, user_id, bool(narrative), proposed_ids, result.text,
+                    result.model, state["user_id"], bool(narrative), proposed_ids, result.text,
                 )
         except Exception:  # noqa: BLE001 — a model outage degrades, it does not 500
-            log.exception("Mesh generation failed for user %s — falling back to rule-based", user_id)
+            log.exception("Mesh generation failed for user %s — falling back to rule-based", state["user_id"])
         finally:
             if result is not None:
-                log_llm_call(db, purpose="generate_rec", result=result, user_id=user_id)
+                log_llm_call(
+                    state["db"], purpose="generate_rec", result=result, user_id=state["user_id"]
+                )
 
-    kept, dropped = ground(proposed_ids, retrieved_ids)
+    return {
+        "candidates": candidates,
+        "narrative": narrative,
+        "proposed_ids": proposed_ids,
+        "source": source,
+        "llm_used": llm_used,
+        "visited_nodes": _visited(state, "generate"),
+    }
+
+
+def _validate_grounding_node(state: AgentState) -> AgentState:
+    db = state["db"]
+    user_id = state["user_id"]
+    retrieved_ids = state.get("retrieved_ids", [])
+    candidates = state.get("candidates", [])
+    visited = _visited(state, "validate_grounding")
+
+    if not retrieved_ids or not candidates:
+        outcome = AgentOutcome(
+            False, "no_candidates", None, retrieved_ids, [], False,
+            state.get("widened", False), visited, state.get("grade_mode"),
+        )
+        return {"outcome": outcome, "visited_nodes": visited}
+
+    by_id = {product.id: product for product in candidates}
+    narrative = state.get("narrative", "")
+    source = state.get("source", RULE_BASED)
+    llm_used = state.get("llm_used", False)
+    kept, dropped = ground(state.get("proposed_ids", []), retrieved_ids)
     if not kept:
-        # No LLM, an unparseable reply, or every id it gave was invented. In the
-        # last case the narrative describes courses we are not showing, so it is
-        # discarded too — a pitch for products that were dropped is worse than no
-        # pitch. Fall back to the top of retrieval.
         kept = retrieved_ids[:3]
         narrative = ""
 
     bad_prices = unsupported_prices(narrative, [by_id[pid] for pid in kept if pid in by_id])
     if bad_prices:
-        log.warning("dropping narrative for user %s — quoted prices %s match no recommended course",
-                    user_id, bad_prices)
+        log.warning(
+            "dropping narrative for user %s — quoted prices %s match no recommended course",
+            user_id, bad_prices,
+        )
         narrative = ""
 
     if not narrative or not llm_used:
-        narrative = _rule_based_narrative(profile, [by_id[pid] for pid in kept if pid in by_id])
+        narrative = _rule_based_narrative(
+            state["profile"], [by_id[pid] for pid in kept if pid in by_id]
+        )
         source = RULE_BASED
 
     previous_version = db.scalar(
@@ -279,11 +460,11 @@ def run_agent(
         user_id=user_id,
         narrative=narrative,
         product_ids=kept,
-        behavior_hash=profile.signature_hash,
-        trigger_reason=reason,
+        behavior_hash=state["profile"].signature_hash,
+        trigger_reason=state["reason"],
         source=source,
         version=(previous_version or 0) + 1,
-        created_at=now or utcnow(),
+        created_at=state.get("now") or utcnow(),
     )
     db.add(recommendation)
     db.commit()
@@ -291,7 +472,87 @@ def run_agent(
     if dropped:
         log.warning("grounding dropped ids %s for user %s (not retrieved)", dropped, user_id)
 
-    return AgentOutcome(True, reason, recommendation, retrieved_ids, dropped, llm_used, widened)
+    outcome = AgentOutcome(
+        True,
+        state["reason"],
+        recommendation,
+        retrieved_ids,
+        dropped,
+        llm_used,
+        state.get("widened", False),
+        visited,
+        state.get("grade_mode"),
+    )
+    return {"outcome": outcome, "visited_nodes": visited}
+
+
+def _build_agent_graph():
+    graph = StateGraph(AgentState)
+    graph.add_node("summarize_behavior", _summarize_behavior_node)
+    graph.add_node("build_interest_profile", _build_interest_profile_node)
+    graph.add_node("retrieve", _retrieve_node)
+    graph.add_node("grade_retrieval", _grade_retrieval_node)
+    graph.add_node("generate", _generate_node)
+    graph.add_node("validate_grounding", _validate_grounding_node)
+    graph.add_edge(START, "summarize_behavior")
+    graph.add_edge("summarize_behavior", "build_interest_profile")
+    graph.add_edge("build_interest_profile", "retrieve")
+    graph.add_edge("retrieve", "grade_retrieval")
+    graph.add_conditional_edges(
+        "grade_retrieval",
+        _after_grade,
+        {"retry": "retrieve", "proceed": "generate"},
+    )
+    graph.add_edge("generate", "validate_grounding")
+    graph.add_edge("validate_grounding", END)
+    return graph.compile(name="smartreco-recommendation-agent")
+
+
+AGENT_GRAPH = _build_agent_graph()
+
+
+def _invoke_agent_graph(initial: AgentState) -> AgentState:
+    settings = initial["settings"]
+    if not settings.langchain_api_key:
+        return AGENT_GRAPH.invoke(initial)
+
+    # Imported only in the opt-in path: no key means no client, background
+    # worker, warning, or tracing side effect.
+    from langsmith import Client, tracing_context
+
+    client = Client(api_key=settings.langchain_api_key)
+    with tracing_context(enabled=True, client=client, project_name="smartreco"):
+        return AGENT_GRAPH.invoke(initial)
+
+
+def run_agent(
+    db: Session,
+    user_id: int,
+    profile: BehaviorProfile,
+    reason: str,
+    *,
+    store: VectorStore | None = None,
+    mesh: MeshClient | None = None,
+    settings: Settings | None = None,
+    now: datetime | None = None,
+) -> AgentOutcome:
+    """Run the existing recommendation steps through the explicit LangGraph."""
+    settings = settings or get_settings()
+    store = store or get_vector_store()
+    mesh = mesh if mesh is not None else get_mesh_client()
+    final = _invoke_agent_graph({
+        "db": db,
+        "user_id": user_id,
+        "profile": profile,
+        "reason": reason,
+        "store": store,
+        "mesh": mesh,
+        "settings": settings,
+        "now": now,
+        "retry_count": 0,
+        "visited_nodes": [],
+    })
+    return final["outcome"]
 
 
 def maybe_recommend(

@@ -43,6 +43,21 @@ class Settings(BaseSettings):
     trigger_staleness_minutes: int = 30
     retrieval_top_k: int = 6
 
+    # Proactive digest. Disabled by default so local/test runs never send mail.
+    digest_enabled: bool = False
+    digest_hour: int = Field(default=18, ge=0, le=23)
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_use_tls: bool = True
+
+    # LangSmith is optional. LangGraph runs locally whether this is set or not.
+    langchain_api_key: str = ""
+
     @property
     def mesh_configured(self) -> bool:
         """True when a real Mesh key is present, so live calls are possible."""

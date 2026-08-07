@@ -10,13 +10,22 @@ from fastapi.staticfiles import StaticFiles
 
 from app.db import init_db
 from app.routers import admin, auth, events, pages
+from app.services.digest import build_digest_scheduler
 from app.templating import STATIC_DIR
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+    scheduler = build_digest_scheduler()
+    app.state.digest_scheduler = scheduler
+    if scheduler is not None:
+        scheduler.start()
+    try:
+        yield
+    finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
