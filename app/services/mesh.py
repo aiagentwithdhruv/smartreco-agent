@@ -75,13 +75,22 @@ class MeshClient:
             max_retries=2,
         )
 
-    def chat(self, messages: list[dict[str, str]], *, temperature: float = 0.4, model: str | None = None) -> MeshResult:
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.4,
+        model: str | None = None,
+        max_tokens: int | None = None,
+    ) -> MeshResult:
         model = model or self.settings.mesh_chat_model
+        max_tokens = self.settings.mesh_chat_max_tokens if max_tokens is None else max_tokens
         started = time.perf_counter()
         response = self._client.chat.completions.create(
             model=model,
             messages=messages,  # type: ignore[arg-type]
             temperature=temperature,
+            max_tokens=max_tokens,
         )
         latency_ms = int((time.perf_counter() - started) * 1000)
         usage = getattr(response, "usage", None)

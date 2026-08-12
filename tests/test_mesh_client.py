@@ -101,7 +101,11 @@ def test_chat_maps_usage_and_model_onto_the_result(live_response):
             self.kwargs = kwargs
             return live_response
 
-    client = MeshClient(Settings(mesh_api_key="rsk_test", mesh_chat_model="minimax/m2-her"))
+    client = MeshClient(Settings(
+        mesh_api_key="rsk_test",
+        mesh_chat_model="minimax/m2-her",
+        mesh_chat_max_tokens=384,
+    ))
     completions = FakeCompletions()
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
@@ -113,6 +117,22 @@ def test_chat_maps_usage_and_model_onto_the_result(live_response):
     assert result.latency_ms >= 0
     assert parse_generation(result.text)[1] == [1, 2]
     assert completions.kwargs["temperature"] == 0.4
+    assert completions.kwargs["max_tokens"] == 384
+
+
+def test_chat_allows_a_call_specific_max_tokens_override(live_response):
+    class Recorder:
+        def create(self, **kwargs):
+            self.kwargs = kwargs
+            return live_response
+
+    client = MeshClient(Settings(mesh_api_key="rsk_test", mesh_chat_max_tokens=384))
+    recorder = Recorder()
+    client._client = SimpleNamespace(chat=SimpleNamespace(completions=recorder))
+
+    client.chat([{"role": "user", "content": "hi"}], max_tokens=128)
+
+    assert recorder.kwargs["max_tokens"] == 128
 
 
 def test_the_model_is_never_hardcoded():

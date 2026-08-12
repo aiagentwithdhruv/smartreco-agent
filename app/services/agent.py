@@ -33,7 +33,7 @@ from app.config import Settings, get_settings
 from app.models import Product, Recommendation, utcnow
 from app.services.behavior import BehaviorProfile
 from app.services.mesh import MeshClient, get_mesh_client, log_llm_call
-from app.services.trigger import TriggerDecision, decide
+from app.services.trigger import TriggerDecision, decide, user_trigger_lock
 from app.services.vector_store import VectorHit, VectorStore, get_vector_store
 
 log = logging.getLogger(__name__)
@@ -54,7 +54,9 @@ SYSTEM_PROMPT = (
     "Never invent a course, a price, a statistic or a claim about content — if a "
     "number was not given to you, do not write one. "
     "Two or three sentences, warm and concrete, referencing what the learner actually did. "
-    "No bullet points, no hype, no exclamation marks."
+    "No bullet points, no hype, no exclamation marks. "
+    "Return one compact, single-line JSON object and nothing else. "
+    "No reasoning, no preamble, no commentary, and no code fence."
 )
 
 
@@ -140,7 +142,8 @@ def _build_messages(profile: BehaviorProfile, products: list[Product]) -> list[d
     user_prompt = (
         f"LEARNER BEHAVIOR:\n{profile.summary()}\n\n"
         f"CANDIDATES (the only courses you may recommend):\n{_candidate_block(products)}\n\n"
-        "Pick the 2-3 best fits and reply with JSON only, no code fence:\n"
+        "Pick the 2-3 best fits. Reply with one compact JSON object and nothing else; "
+        "do not include reasoning or a preamble:\n"
         '{"narrative": "<2-3 sentences, courses named by title, no ids>", '
         '"product_ids": [<ids from CANDIDATES>]}'
     )
@@ -155,23 +158,55 @@ def parse_generation(text: str) -> tuple[str, list[int]]:
 
     Models wrap JSON in prose or code fences often enough that being strict here
     would mean throwing away good answers, so the first JSON object in the reply
-    wins. A reply we cannot parse yields no ids, and the caller falls back.
+    wins. If the provider truncates the object after both required values are
+    complete, salvage them; a narrative without its closing quote or without a
+    complete, non-empty id array remains a parse failure.
     """
     match = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not match:
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+        else:
+            if not isinstance(data, dict):
+                return "", []
+            return str(data.get("narrative") or "").strip(), _parse_product_ids(
+                data.get("product_ids")
+            )
+
+    # A completion can end after `]` but before the object's final `}`. Match a
+    # JSON string (including escapes) so an unterminated narrative never passes.
+    object_start = (text or "").find("{")
+    if object_start < 0:
+        return "", []
+    fragment = text[object_start:]
+    narrative_match = re.search(
+        r'"narrative"\s*:\s*("(?:\\.|[^"\\])*")', fragment, re.DOTALL
+    )
+    ids_match = re.search(r'"product_ids"\s*:\s*(\[[^\]]*\])', fragment, re.DOTALL)
+    if not narrative_match or not ids_match:
         return "", []
     try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
+        narrative = json.loads(narrative_match.group(1)).strip()
+        raw_ids = json.loads(ids_match.group(1))
+    except (AttributeError, json.JSONDecodeError):
         return "", []
-    narrative = str(data.get("narrative") or "").strip()
+    ids = _parse_product_ids(raw_ids)
+    if not narrative or not ids:
+        return "", []
+    return narrative, ids
+
+
+def _parse_product_ids(raw_ids: Any) -> list[int]:
+    """Normalize model-provided ids while ignoring values that are not integers."""
     ids: list[int] = []
-    for raw in data.get("product_ids") or []:
+    for raw in raw_ids or []:
         try:
             ids.append(int(raw))
         except (TypeError, ValueError):
             continue
-    return narrative, ids
+    return ids
 
 
 def ground(candidate_ids: list[int], allowed_ids: list[int]) -> tuple[list[int], list[int]]:
@@ -384,24 +419,35 @@ def _generate_node(state: AgentState) -> AgentState:
     narrative, proposed_ids, source, llm_used = "", [], RULE_BASED, False
     mesh = state.get("mesh")
     if mesh is not None and candidates:
-        result = None
-        try:
-            result = mesh.chat(_build_messages(state["profile"], candidates))
-            narrative, proposed_ids = parse_generation(result.text)
-            llm_used = True
-            source = result.model
-            if not narrative or not proposed_ids:
+        messages = _build_messages(state["profile"], candidates)
+        for attempt in range(2):  # initial generation plus exactly one parse-failure retry
+            result = None
+            try:
+                result = mesh.chat(messages)
+                narrative, proposed_ids = parse_generation(result.text)
+                llm_used = True
+                source = result.model
+                if narrative and proposed_ids:
+                    break
                 log.warning(
-                    "unparseable generation from %s for user %s (narrative=%s, ids=%s): %.300s",
-                    result.model, state["user_id"], bool(narrative), proposed_ids, result.text,
+                    "unparseable generation from %s for user %s "
+                    "(attempt=%s/2, narrative=%s, ids=%s): %.300s",
+                    result.model, state["user_id"], attempt + 1,
+                    bool(narrative), proposed_ids, result.text,
                 )
-        except Exception:  # noqa: BLE001 — a model outage degrades, it does not 500
-            log.exception("Mesh generation failed for user %s — falling back to rule-based", state["user_id"])
-        finally:
-            if result is not None:
-                log_llm_call(
-                    state["db"], purpose="generate_rec", result=result, user_id=state["user_id"]
+            except Exception:  # noqa: BLE001 — a model outage degrades, it does not 500
+                log.exception(
+                    "Mesh generation failed for user %s — falling back to rule-based",
+                    state["user_id"],
                 )
+                break
+            finally:
+                if result is not None:
+                    # Each attempt is a real Mesh call and gets its own row.
+                    log_llm_call(
+                        state["db"], purpose="generate_rec", result=result,
+                        user_id=state["user_id"],
+                    )
 
     return {
         "candidates": candidates,
@@ -564,7 +610,13 @@ def maybe_recommend(
     settings: Settings | None = None,
     now: datetime | None = None,
 ) -> AgentOutcome:
-    """Ask the trigger engine, then run the agent only if it said yes."""
+    """Ask the trigger engine, then atomically authorize and run per user.
+
+    The first decision keeps ordinary skip paths lock-free. A decision that
+    wants to run must acquire this user's lock and re-read the database before
+    generation. That closes the gap in which concurrent requests could all see
+    the same old recommendation and all call the model.
+    """
     settings = settings or get_settings()
     decision: TriggerDecision = decide(db, user_id, settings=settings, now=now)
 
@@ -575,7 +627,26 @@ def maybe_recommend(
             db.commit()
         return AgentOutcome(False, decision.reason, decision.current)
 
-    return run_agent(
-        db, user_id, decision.profile, decision.reason,
-        store=store, mesh=mesh, settings=settings, now=now,
-    )
+    observed_recommendation_id = decision.current.id if decision.current is not None else None
+    with user_trigger_lock(user_id):
+        # TOCTOU guard: this must be a new DB-backed decision inside the lock.
+        decision = decide(db, user_id, settings=settings, now=now)
+        current_recommendation_id = decision.current.id if decision.current is not None else None
+
+        if current_recommendation_id != observed_recommendation_id:
+            # Another request won while this one waited. Report the cooldown
+            # contract (rather than cache_hit) and serve the row it just wrote.
+            return AgentOutcome(False, "cooldown", decision.current)
+
+        if not decision.run:
+            if decision.cache_hit:
+                log_llm_call(
+                    db, purpose="generate_rec", user_id=user_id, cache_hit=True, model=""
+                )
+                db.commit()
+            return AgentOutcome(False, decision.reason, decision.current)
+
+        return run_agent(
+            db, user_id, decision.profile, decision.reason,
+            store=store, mesh=mesh, settings=settings, now=now,
+        )

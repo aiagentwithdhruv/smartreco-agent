@@ -23,8 +23,11 @@ neither should the output.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from threading import Lock
+from weakref import WeakValueDictionary
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -35,6 +38,24 @@ from app.services.behavior import BehaviorProfile, summarize
 
 RUN_REASONS = ("first_recommendation", "search_intent", "event_threshold", "staleness")
 SKIP_REASONS = ("no_activity", "cache_hit", "cooldown", "below_threshold")
+
+# This registry deliberately scopes serialization to one user and one process.
+# Weak values keep inactive user ids from accumulating forever. The registry
+# guard protects only lock lookup/creation; it never serializes agent work.
+_user_locks_guard = Lock()
+_user_locks: WeakValueDictionary[int, Lock] = WeakValueDictionary()
+
+
+@contextmanager
+def user_trigger_lock(user_id: int):
+    """Serialize trigger-authorized work for one user in this process."""
+    with _user_locks_guard:
+        lock = _user_locks.get(user_id)
+        if lock is None:
+            lock = Lock()
+            _user_locks[user_id] = lock
+    with lock:
+        yield
 
 
 @dataclass

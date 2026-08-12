@@ -100,6 +100,33 @@ def test_parse_generation_reads_plain_json():
     assert ids == [3, 7]
 
 
+def test_parse_generation_salvages_complete_fields_from_a_truncated_object():
+    truncated = (
+        '{"narrative": "Tool-Calling and Function Design complements your agent work.", '
+        '"product_ids": [3, 7]'
+    )
+
+    assert parse_generation(truncated) == (
+        "Tool-Calling and Function Design complements your agent work.",
+        [3, 7],
+    )
+
+
+def test_parse_generation_rejects_an_unterminated_narrative_even_with_complete_ids():
+    truncated = (
+        '{"product_ids": [3, 7], '
+        '"narrative": "Tool-Calling and Function Design complements your wor'
+    )
+
+    assert parse_generation(truncated) == ("", [])
+
+
+def test_parse_generation_keeps_the_well_formed_contract_unchanged():
+    well_formed = '{"narrative": "Exact output.", "product_ids": [3, "7", "bad"]}'
+
+    assert parse_generation(well_formed) == ("Exact output.", [3, 7])
+
+
 def test_parse_generation_survives_a_code_fence_and_chatter():
     text = "Sure! Here you go:\n" + reply("Picks.", [1], fence=True) + "\nHope that helps."
     assert parse_generation(text) == ("Picks.", [1])
@@ -361,6 +388,24 @@ def test_the_model_is_only_shown_retrieved_candidates(db, user, store, catalog):
     assert profile.summary()[:40] in prompt
 
 
+def test_generation_prompt_requires_compact_json_without_reasoning(
+    db, user, store, catalog, monkeypatch,
+):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.65)
+    mesh = FakeMesh(reply("Picks.", [catalog[0].id]))
+
+    run_agent(
+        db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS,
+    )
+
+    system_prompt = mesh.calls[0][0]["content"]
+    user_prompt = mesh.calls[0][1]["content"]
+    assert "compact, single-line JSON object and nothing else" in system_prompt
+    assert "No reasoning, no preamble" in system_prompt
+    assert "compact JSON object and nothing else" in user_prompt
+
+
 def test_a_generated_recommendation_is_stored_and_versioned(db, user, store, catalog):
     profile = agent_behavior(db, user, catalog)
     mesh = FakeMesh(reply("You have been deep in agent orchestration.", [catalog[0].id]))
@@ -394,6 +439,57 @@ def test_every_model_call_is_logged(db, user, store, catalog):
 
     grades = db.scalars(select(LLMCall).where(LLMCall.purpose == "grade_retrieval")).all()
     assert grades == [], "a skipped judge must not leave a fictional call row"
+
+
+def test_unparseable_generation_retries_once_then_falls_back(
+    db, user, store, catalog, monkeypatch,
+):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.65)
+    mesh = FakeMesh('{"narrative": "cut off mid-senten')
+
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS,
+    )
+
+    assert len(mesh.calls) == 2, "one initial generation and exactly one retry"
+    assert outcome.recommendation.source == RULE_BASED
+
+
+def test_generation_retry_is_recorded_in_llm_calls(
+    db, user, store, catalog, monkeypatch,
+):
+    profile = agent_behavior(db, user, catalog)
+    fixed_retrieval(monkeypatch, catalog, score=0.65)
+
+    class SucceedsOnRetry(FakeMesh):
+        def chat(self, messages, *, temperature=0.4, model=None):
+            self.calls.append(messages)
+            text = (
+                '{"narrative": "cut off mid-senten'
+                if len(self.calls) == 1
+                else reply("Recovered on the bounded retry.", [catalog[0].id])
+            )
+            return MeshResult(
+                text=text,
+                model="fake/chat",
+                tokens_in=120,
+                tokens_out=48,
+                latency_ms=310,
+            )
+
+    mesh = SucceedsOnRetry()
+    outcome = run_agent(
+        db, user.id, profile, "search_intent", store=store, mesh=mesh, settings=SETTINGS,
+    )
+
+    calls = db.scalars(
+        select(LLMCall).where(LLMCall.purpose == "generate_rec").order_by(LLMCall.id)
+    ).all()
+    assert len(calls) == 2
+    assert all(call.model == "fake/chat" and not call.cache_hit for call in calls)
+    assert outcome.recommendation.source == "fake/chat"
+    assert outcome.recommendation.narrative == "Recovered on the bounded retry."
 
 
 def test_without_a_mesh_client_the_narrative_is_labelled_rule_based(db, user, store, catalog):

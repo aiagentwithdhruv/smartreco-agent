@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import Product, Recommendation
-from app.services.agent import maybe_recommend, run_agent
+from app.services.agent import maybe_recommend
 from app.services.mesh import log_llm_call
 from app.services.trigger import decide
 from app.services.vector_store import VectorStore, get_vector_store
@@ -78,7 +78,9 @@ def current_for(
             # Something to show already: refresh after the response goes out.
             schedule(refresh_user, user_id)
             return _view(db, decision.current)
-        outcome = run_agent(db, user_id, decision.profile, decision.reason, store=store)
+        # Cold-start generation still goes through the per-user atomic trigger
+        # boundary; concurrent first renders must not both call the model.
+        outcome = maybe_recommend(db, user_id, store=store)
         return _view(db, outcome.recommendation or decision.current)
 
     if decision.cache_hit:

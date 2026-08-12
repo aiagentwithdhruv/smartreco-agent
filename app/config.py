@@ -24,6 +24,10 @@ class Settings(BaseSettings):
         default="minimax/m2-her",
         validation_alias=AliasChoices("MESH_MODEL", "MESH_CHAT_MODEL", "mesh_chat_model"),
     )
+    # Recommendation narratives are deliberately short. Bounding completions
+    # prevents a rambling model from reaching a provider default and truncating
+    # the JSON envelope before its closing fields arrive.
+    mesh_chat_max_tokens: int = Field(default=512, ge=64, le=2048)
     # Mesh has no free embedding model (checked 4 Aug 2026: 997 models, 3 free,
     # none of them embeddings), so this only works on a topped-up account.
     mesh_embedding_model: str = "google/embeddinggemma-300m"

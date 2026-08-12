@@ -4,7 +4,7 @@ Its trigger engine suppresses waste before LangGraph is allowed to call a model.
 `26 events → 6 model calls (3 served from the behavior cache). 4.3 events per call.`
 That is five agent runs—not 26—with four retrieval judges avoided and one honestly counted.
 
-Submission for the **SmartReco Build Challenge 2026** (Krish Naik Academy × Mesh API).
+Built by [Dhruv Tomar](https://aiwithdhruv.com) — AI Builder.
 
 ## Run it in three commands
 
@@ -14,15 +14,88 @@ python seed.py
 python scripts/demo.py
 ```
 
-The demo is deterministic, runs with **no API key and no cost**, and prints every
-trigger decision. That is a feature: a judge can verify the central claim from a
-clean clone without credentials, a hosted service, or a paid account. Python
-3.11+ is required.
+The demo is deterministic and prints every trigger decision. It runs without
+credentials so the central efficiency claim can be verified from a clean clone —
+but that is the demo path only. **The full application does need a Mesh API key
+to generate real recommendations.** Everything required is listed below.
 
-To use the browser app afterward, run `uvicorn app.main:app --reload` and open
+To use the browser app, run `uvicorn app.main:app --reload` and open
 `http://127.0.0.1:8000`. The seeded learner login is
 `aditi@example.com` / `smartreco123`; the admin login is
 `admin@smartreco.dev` / `smartreco123`.
+
+## Setup — everything you need
+
+**Prerequisites**
+
+| Requirement | Notes |
+|---|---|
+| Python **3.11+** | Required |
+| `pip install -r requirements.txt` | FastAPI, LangGraph, LangChain, ChromaDB, APScheduler, OpenAI SDK, passlib, Jinja2 |
+| Disk | SQLite file and a local Chroma index are created on first run |
+
+**Environment variables** — `cp .env.example .env`. That file documents every one
+of these inline; the table is the summary.
+
+*LLM gateway — Mesh is the only one this project talks to*
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MESH_API_KEY` | *empty* | Key (`rsk_…`). **Without it the app still runs end to end** — embeddings go local and the agent writes a clearly-labelled rule-based narrative. Nothing ever fakes a model call. |
+| `MESH_BASE_URL` | `https://api.meshapi.ai/v1` | Gateway endpoint. |
+| `MESH_MODEL` | `minimax/m2-her` | Chat model for the narrative. Free on Mesh, so this works on a zero-balance account. `MESH_CHAT_MODEL` is accepted as an alias. |
+| `MESH_EMBEDDING_MODEL` | `google/embeddinggemma-300m` | Only used when `EMBEDDINGS=mesh`. Mesh has no free embedding model, so this returns HTTP 402 without balance. |
+| `EMBEDDINGS` | `local` | `local` = all-MiniLM-L6-v2 via Chroma's ONNX runtime, real semantic vectors, offline, ~80 MB downloaded once · `mesh` = force Mesh · `auto` = Mesh, falling back to local · `hashing` = deterministic lexical hashing, used by the tests. |
+
+*App*
+
+| Variable | Default | What it does |
+|---|---|---|
+| `SESSION_SECRET` | `dev-secret-change-me` | Signs the session cookie. **Change it in any real deployment.** |
+| `DATABASE_URL` | `sqlite:///./smartreco.sqlite3` | Relational source of truth. |
+| `CHROMA_DIR` | `./.chroma` | Local vector index. |
+
+*Trigger engine — how often the agent is allowed to think*
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TRIGGER_MIN_EVENTS` | `8` | Meaningful events since the last recommendation before a recompute. |
+| `TRIGGER_COOLDOWN_SECONDS` | `300` | Hard floor between two LLM-backed recomputes for one user. |
+| `TRIGGER_STALENESS_MINUTES` | `30` | Age at which a recommendation counts as stale, given new activity. |
+| `RETRIEVAL_TOP_K` | `6` | Products pulled from the vector store per recommendation. |
+
+*Daily digest — reports stored recommendations, never regenerates them*
+
+| Variable | Default | What it does |
+|---|---|---|
+| `DIGEST_ENABLED` | `false` | Off by default so a clone starts no background work unasked. |
+| `DIGEST_HOUR` | `18` | Hour (IST) the APScheduler job fires. |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | *empty* | Telegram delivery. **Wins when both are set.** |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USERNAME` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_USE_TLS` | `587`, `true` | Email delivery, used when `SMTP_HOST` and `SMTP_FROM` are set. Without either channel the digest is composed and logged, not sent. |
+
+*Observability*
+
+| Variable | Default | What it does |
+|---|---|---|
+| `LANGCHAIN_API_KEY` | *empty* | Enables LangSmith tracing. Empty means tracing is fully off — it is gated solely by this key. |
+
+**Full run**
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # then add MESH_API_KEY
+python seed.py                # catalogue + demo users, dual-written to SQLite and Chroma
+python scripts/demo.py        # deterministic trigger/efficiency proof
+uvicorn app.main:app --reload # browser app at http://127.0.0.1:8000
+pytest                        # full suite
+```
+
+**CI** runs a syntax and dependency check on every push
+(`.github/workflows/smartreco-checks.yml`) and needs `MESH_API_KEY` as a
+repository secret under Settings → Secrets and variables → Actions.
+
+`.env` is gitignored and no key is committed.
 
 ## Architecture
 
@@ -166,7 +239,7 @@ python -m pytest -q
 ```
 
 Tests run offline: Mesh is faked and embeddings use deterministic hashing. They
-currently total **170 passing tests** and cover trigger reasons, graph node
+currently total **184 passing tests** and cover trigger reasons, graph node
 order, the single retrieval retry, grounding,
 digest activity selection and zero-call discipline, dual-write repair, auth,
 pages, tracker batching, and ingestion. The critical retry, grounding, digest,
@@ -179,6 +252,9 @@ mutation-checked.
 - No real email infrastructure by default; SMTP and Telegram delivery require
   operator-provided credentials, otherwise the digest is intentionally log-only.
 - SQLite is not Postgres and is not presented as a horizontally scalable store.
+- Trigger generation is serialized per user with in-process locks. This closes
+  concurrent-request races in a single application process, but a multi-worker
+  deployment needs a database-level advisory lock or a distributed Redis lock.
 - Chroma is local and single-node, not a distributed vector service.
 - There is no deployment, worker cluster, or multi-region scheduler in this repo.
 
